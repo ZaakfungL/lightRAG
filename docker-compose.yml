@@ -14,6 +14,8 @@ services:
       - ./data/inputs:/app/data/inputs
       - ./config.ini:/app/config.ini
       - ./.env:/app/.env
+      # 代码目录挂载，实现开发时的实时同步
+      - ./lightrag:/app/lightrag
     env_file:
       - .env
     restart: unless-stopped
