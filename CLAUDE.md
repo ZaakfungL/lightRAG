@@ -38,3 +38,4 @@ LightRAG is an advanced Retrieval-Augmented Generation (RAG) framework designed 
 - Configure storage backends through `LIGHTRAG_*` variables and validate them with `docker-compose` services when needed.
 - Treat `lightrag.log*` as local artefacts; purge sensitive information before sharing logs or outputs.
 - 请你说中文
+- 本项目python程序需要运行在conda的kaggleRAG环境下

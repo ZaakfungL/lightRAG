@@ -994,12 +994,18 @@ class LightRAG:
                 logger.warning("All chunks are already in the storage.")
                 return
 
+            # Prepare tasks based on entity extraction setting
+            disable_entity_extraction = get_env_value("DISABLE_ENTITY_EXTRACTION", "false").lower() == "true"
             tasks = [
                 self.chunks_vdb.upsert(inserting_chunks),
-                self._process_extract_entities(inserting_chunks),
                 self.full_docs.upsert(new_docs),
                 self.text_chunks.upsert(inserting_chunks),
             ]
+
+            if not disable_entity_extraction:
+                tasks.append(self._process_extract_entities(inserting_chunks))
+            else:
+                logger.info("Skipping entity extraction in ainsert_custom_chunks (DISABLE_ENTITY_EXTRACTION=true)")
             await asyncio.gather(*tasks)
 
         finally:
@@ -1596,13 +1602,25 @@ class LightRAG:
                             await asyncio.gather(*first_stage_tasks)
 
                             # Stage 2: Process entity relation graph (after text_chunks are saved)
-                            entity_relation_task = asyncio.create_task(
-                                self._process_extract_entities(
-                                    chunks, pipeline_status, pipeline_status_lock
+                            # Check if entity extraction is disabled
+                            disable_entity_extraction = get_env_value("DISABLE_ENTITY_EXTRACTION", "false").lower() == "true"
+                            if disable_entity_extraction:
+                                log_message = f"Skipping entity extraction (DISABLE_ENTITY_EXTRACTION=true) for {file_path}"
+                                logger.info(log_message)
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = log_message
+                                    pipeline_status["history_messages"].append(log_message)
+                                # Mark as processed without entity extraction
+                                file_extraction_stage_ok = True
+                                entity_relation_task = None
+                            else:
+                                entity_relation_task = asyncio.create_task(
+                                    self._process_extract_entities(
+                                        chunks, pipeline_status, pipeline_status_lock
+                                    )
                                 )
-                            )
-                            await entity_relation_task
-                            file_extraction_stage_ok = True
+                                await entity_relation_task
+                                file_extraction_stage_ok = True
 
                         except Exception as e:
                             # Log error and update pipeline status
@@ -1656,9 +1674,10 @@ class LightRAG:
                         # Concurrency is controlled by keyed lock for individual entities and relationships
                         if file_extraction_stage_ok:
                             try:
-                                # Get chunk_results from entity_relation_task
-                                chunk_results = await entity_relation_task
-                                await merge_nodes_and_edges(
+                                # Get chunk_results from entity_relation_task (only if entity extraction was performed)
+                                if entity_relation_task is not None:
+                                    chunk_results = await entity_relation_task
+                                    await merge_nodes_and_edges(
                                     chunk_results=chunk_results,  # result collected from entity_relation_task
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
                                     entity_vdb=self.entities_vdb,
@@ -1700,11 +1719,39 @@ class LightRAG:
                                     }
                                 )
 
+                                # Record processing end time and update status (for both entity extraction enabled/disabled)
+                                processing_end_time = int(time.time())
+
+                                await self.doc_status.upsert(
+                                    {
+                                        doc_id: {
+                                            "status": DocStatus.PROCESSED,
+                                            "chunks_count": len(chunks),
+                                            "chunks_list": list(chunks.keys()),
+                                            "content_summary": status_doc.content_summary,
+                                            "content_length": status_doc.content_length,
+                                            "created_at": status_doc.created_at,
+                                            "updated_at": datetime.now(
+                                                timezone.utc
+                                            ).isoformat(),
+                                            "file_path": file_path,
+                                            "track_id": status_doc.track_id,  # Preserve existing track_id
+                                            "metadata": {
+                                                "processing_start_time": processing_start_time,
+                                                "processing_end_time": processing_end_time,
+                                            },
+                                        }
+                                    }
+                                )
+
                                 # Call _insert_done after processing each file
                                 await self._insert_done()
 
                                 async with pipeline_status_lock:
-                                    log_message = f"Completed processing file {current_file_number}/{total_files}: {file_path}"
+                                    if entity_relation_task is None:
+                                        log_message = f"Completed processing file {current_file_number}/{total_files}: {file_path} (entity extraction disabled)"
+                                    else:
+                                        log_message = f"Completed processing file {current_file_number}/{total_files}: {file_path}"
                                     logger.info(log_message)
                                     pipeline_status["latest_message"] = log_message
                                     pipeline_status["history_messages"].append(
@@ -2347,6 +2394,12 @@ class LightRAG:
 
         try:
             query_result = None
+
+            # Check if entity extraction is disabled and downgrade to naive mode
+            disable_entity_extraction = get_env_value("DISABLE_ENTITY_EXTRACTION", "false").lower() == "true"
+            if disable_entity_extraction and param.mode in ["local", "global", "hybrid", "mix"]:
+                logger.info(f"Converting query mode from '{param.mode}' to 'naive' (DISABLE_ENTITY_EXTRACTION=true)")
+                param.mode = "naive"
 
             if param.mode in ["local", "global", "hybrid", "mix"]:
                 query_result = await kg_query(

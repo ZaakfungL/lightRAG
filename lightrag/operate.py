@@ -4031,6 +4031,9 @@ async def naive_query(
 
     chunks = await _get_vector_context(query, chunks_vdb, query_param, None)
 
+    logger.info(f"[naive_query] Vector retrieval found {len(chunks) if chunks else 0} chunks for query: {query}")
+    logger.debug(f"[naive_query] Query param: {query_param}")
+
     if chunks is None or len(chunks) == 0:
         logger.info(
             "[naive_query] No relevant document chunks found; returning no-result."
