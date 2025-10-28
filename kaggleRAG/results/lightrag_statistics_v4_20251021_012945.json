@@ -1,9 +1,0 @@
-{
-  "total_samples": 5,
-  "average_answer_similarity": 0.4,
-  "answer_accuracy": 0.4,
-  "average_reference_accuracy": 0.0,
-  "reference_accuracy_rate": 0.0,
-  "successful_queries": 5,
-  "failed_queries": 0
-}
